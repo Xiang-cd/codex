@@ -32,17 +32,19 @@ pub(super) fn resume_model_settings_for_overrides(
     config: &Config,
     harness_overrides: &ConfigOverrides,
 ) -> crate::app_server_session::ResumeModelSettings {
+    // A selected profile is an explicit model route even when it inherits the
+    // provider and model from the base user config.
     let has_layer_override = config.config_layer_stack.layers_high_to_low().any(|layer| {
         matches!(
             &layer.name,
-            ConfigLayerSource::SessionFlags
-                | ConfigLayerSource::User {
-                    profile: Some(_),
-                    ..
-                }
-        ) && ["model", "model_provider", "model_reasoning_effort"]
-            .iter()
-            .any(|key| layer.config.get(*key).is_some())
+            ConfigLayerSource::User {
+                profile: Some(_),
+                ..
+            }
+        ) || matches!(&layer.name, ConfigLayerSource::SessionFlags)
+            && ["model", "model_provider", "model_reasoning_effort"]
+                .iter()
+                .any(|key| layer.config.get(*key).is_some())
     });
     if harness_overrides.model.is_some()
         || harness_overrides.model_provider.is_some()
@@ -1628,7 +1630,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resume_model_settings_preserves_only_explicit_model_overrides() {
+    async fn resume_model_settings_uses_selected_profile() {
         let mut app = make_test_app().await;
 
         assert_eq!(
@@ -1675,8 +1677,23 @@ mod tests {
             app.config.config_layer_stack = ConfigLayerStack::default()
                 .with_user_config_profile(&profile_path, Some(&profile), config)
                 .expect("user config profile layer stack");
-            assert_eq!(app.resume_model_settings(), expected);
+            assert_eq!(
+                app.resume_model_settings(),
+                crate::app_server_session::ResumeModelSettings::OverrideFromCurrentConfig
+            );
         }
+
+        app.config.config_layer_stack = ConfigLayerStack::default()
+            .with_user_config_profile(
+                &profile_path,
+                Some(&profile),
+                TomlValue::Table(toml::map::Map::new()),
+            )
+            .expect("empty user config profile layer stack");
+        assert_eq!(
+            app.resume_model_settings(),
+            crate::app_server_session::ResumeModelSettings::OverrideFromCurrentConfig
+        );
 
         app.config.config_layer_stack = ConfigLayerStack::default()
             .with_user_config(
